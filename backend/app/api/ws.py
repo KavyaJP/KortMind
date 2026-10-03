@@ -10,20 +10,20 @@ manager = LLMManager()
 
 
 async def build_linear_history(chat_id: str) -> list:
-    async with store.modify_chat(chat_id) as chat_tree:
-        if not chat_tree or "nodes" not in chat_tree:
-            return []
+    chat_tree = await store.read_chat(chat_id)
+    if not chat_tree or "nodes" not in chat_tree:
+        return []
 
-        nodes = chat_tree.get("nodes", {})
-        curr_id = chat_tree.get("active_leaf_id")
-        history = []
+    nodes = chat_tree.get("nodes", {})
+    curr_id = chat_tree.get("active_leaf_id")
+    history = []
 
-        while curr_id and curr_id in nodes:
-            node = nodes[curr_id]
-            history.append({"role": node["role"], "content": node["content"]})
-            curr_id = node.get("parent_id")
+    while curr_id and curr_id in nodes:
+        node = nodes[curr_id]
+        history.append({"role": node["role"], "content": node["content"]})
+        curr_id = node.get("parent_id")
 
-        return list(reversed(history))
+    return list(reversed(history))
 
 
 @router.websocket("/ws")
@@ -46,7 +46,7 @@ async def chat_websocket(websocket: WebSocket, token: Optional[str] = None):
                 try:
                     engine = manager.get_engine(engine_name)
 
-                    # Safely inject assistant placeholder node into DAG
+                    # Inject assistant placeholder node into DAG
                     async with store.modify_chat(chat_id) as chat_tree:
                         nodes = chat_tree.setdefault("nodes", {})
                         parent_id = chat_tree.get("active_leaf_id")
