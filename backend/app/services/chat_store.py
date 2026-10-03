@@ -20,13 +20,11 @@ class ChatStore:
         self._locks: Dict[str, asyncio.Lock] = {}
 
     def _get_lock(self, chat_id: str) -> asyncio.Lock:
-        """Retrieves or creates an in-memory lock for a specific chat."""
         if chat_id not in self._locks:
             self._locks[chat_id] = asyncio.Lock()
         return self._locks[chat_id]
 
     async def read_chat(self, chat_id: str) -> Dict[str, Any]:
-        """Reads chat JSON without acquiring an exclusive write lock."""
         file_path = os.path.join(self.data_dir, f"{chat_id}.json")
         if not os.path.exists(file_path):
             return {}
@@ -41,7 +39,6 @@ class ChatStore:
 
     @asynccontextmanager
     async def modify_chat(self, chat_id: str) -> AsyncGenerator[Dict[str, Any], None]:
-        """Safely modifies chat JSON under an async lock."""
         file_path = os.path.join(self.data_dir, f"{chat_id}.json")
         lock = self._get_lock(chat_id)
 
@@ -59,3 +56,11 @@ class ChatStore:
 
             async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
                 await f.write(json.dumps(chat_data, indent=2))
+
+    async def delete_chat(self, chat_id: str) -> bool:
+        file_path = os.path.join(self.data_dir, f"{chat_id}.json")
+        async with self._get_lock(chat_id):
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                return True
+        return False
