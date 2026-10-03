@@ -4,10 +4,44 @@ export const useChatStore = create((set, get) => ({
   chatList: [],
   chatId: null,
   messages: [],
+  models: [],
+  selectedModel: "",
   isConnected: false,
   isGenerating: false,
+  isModelLoading: false,
   activeLeafId: null,
   ws: null,
+
+  fetchModels: async () => {
+    try {
+      const res = await fetch("http://localhost:20559/api/models");
+      const data = await res.json();
+      if (data.models && data.models.length > 0) {
+        set({ models: data.models });
+        // Only auto-select if nothing is currently selected
+        if (!get().selectedModel) {
+          set({ selectedModel: data.models[0] });
+        }
+      }
+    } catch (error) {
+      console.error("Failed to fetch models", error);
+    }
+  },
+
+  setSelectedModel: async (model) => {
+    set({ selectedModel: model, isModelLoading: true });
+    try {
+      await fetch("http://localhost:20559/api/models/switch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+    } catch (error) {
+      console.error("Failed to switch model", error);
+    } finally {
+      set({ isModelLoading: false });
+    }
+  },
 
   fetchChatList: async () => {
     try {
@@ -144,9 +178,31 @@ export const useChatStore = create((set, get) => ({
     set({ ws });
   },
 
+  stopGeneration: () => {
+    const { ws, chatId, isGenerating } = get();
+    if (!ws || !isGenerating || !chatId) return;
+
+    ws.send(
+      JSON.stringify({
+        event: "stop_generation",
+        data: { chat_id: chatId },
+      }),
+    );
+
+    set({ isGenerating: false });
+  },
+
   sendMessage: async (content) => {
-    const { chatId, activeLeafId, ws } = get();
-    if (!content.trim() || !ws || get().isGenerating || !chatId) return;
+    const {
+      chatId,
+      activeLeafId,
+      ws,
+      selectedModel,
+      isGenerating,
+      isModelLoading,
+    } = get();
+    if (!content.trim() || !ws || isGenerating || isModelLoading || !chatId)
+      return;
 
     set({ isGenerating: true });
 
@@ -184,7 +240,9 @@ export const useChatStore = create((set, get) => ({
           data: {
             chat_id: chatId,
             engine: "ollama",
-            model: "hf.co/bartowski/TheDrummer_Cydonia-24B-v4.3-GGUF:Q3_K_M",
+            model:
+              selectedModel ||
+              "hf.co/bartowski/TheDrummer_Cydonia-24B-v4.3-GGUF:Q3_K_M",
           },
         }),
       );

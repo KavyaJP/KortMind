@@ -4,8 +4,9 @@ import { useChatStore } from './store/useChatStore';
 function App() {
   const {
     chatList, chatId, messages, isConnected, isGenerating,
+    models, selectedModel, fetchModels, setSelectedModel, isModelLoading,
     connect, fetchChatList, createNewChat, loadChat, sendMessage,
-    renameChat, deleteChat
+    renameChat, deleteChat, stopGeneration
   } = useChatStore();
 
   const [input, setInput] = useState('');
@@ -16,7 +17,8 @@ function App() {
   useEffect(() => {
     connect();
     fetchChatList();
-  }, [connect, fetchChatList]);
+    fetchModels();
+  }, [connect, fetchChatList, fetchModels]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -51,7 +53,7 @@ function App() {
         <div className="p-4 border-b border-gray-800">
           <button
             onClick={createNewChat}
-            disabled={isGenerating}
+            disabled={isGenerating || isModelLoading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors disabled:opacity-50"
           >
             + New Chat
@@ -80,7 +82,7 @@ function App() {
               ) : (
                 <button
                   onClick={() => loadChat(chat.id)}
-                  disabled={isGenerating || editingChatId !== null}
+                  disabled={isGenerating || isModelLoading || editingChatId !== null}
                   className={`flex-1 text-left text-sm truncate ${chatId === chat.id ? 'text-white font-medium' : 'text-gray-400 hover:text-gray-200'
                     }`}
                 >
@@ -115,8 +117,25 @@ function App() {
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         <header className="flex items-center justify-between bg-gray-800 p-4 shadow-md z-10">
           <h1 className="text-xl font-bold text-white">Local Grok</h1>
-          <div className={`text-sm font-semibold ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
-            {isConnected ? '● Connected' : '○ Disconnected'}
+          <div className="flex items-center gap-4">
+            {isModelLoading && (
+              <span className="text-sm text-blue-400 animate-pulse font-medium">Switching models...</span>
+            )}
+            {models.length > 0 && (
+              <select
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                disabled={isGenerating || isModelLoading}
+                className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block px-3 py-1.5 disabled:opacity-50"
+              >
+                {models.map(model => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
+            )}
+            <div className={`text-sm font-semibold ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
+              {isConnected ? '● Connected' : '○ Disconnected'}
+            </div>
           </div>
         </header>
 
@@ -156,17 +175,26 @@ function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              disabled={isGenerating || !isConnected || !chatId}
-              placeholder={!chatId ? "Select a chat..." : isConnected ? "Type a message..." : "Connecting to backend..."}
+              disabled={isGenerating || isModelLoading || !isConnected || !chatId}
+              placeholder={!chatId ? "Select a chat..." : isModelLoading ? "Switching models..." : isConnected ? "Type a message..." : "Connecting to backend..."}
               className="flex-1 rounded-lg bg-gray-900 border border-gray-600 p-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
             />
-            <button
-              onClick={handleSend}
-              disabled={isGenerating || !input.trim() || !isConnected || !chatId}
-              className="rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
-            >
-              Send
-            </button>
+            {isGenerating ? (
+              <button
+                onClick={stopGeneration}
+                className="rounded-lg bg-red-600 px-6 py-3 font-semibold text-white hover:bg-red-500 transition-colors"
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || isModelLoading || !isConnected || !chatId}
+                className="rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
+              >
+                Send
+              </button>
+            )}
           </div>
         </footer>
       </div>
