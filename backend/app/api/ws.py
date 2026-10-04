@@ -1,5 +1,6 @@
 import json
 import asyncio
+import re
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.services.chat_store import ChatStore
@@ -13,7 +14,7 @@ active_tasks = {}
 @router.websocket("/api/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("connection open")
+    print("[WS] Client connected")
 
     try:
         while True:
@@ -52,15 +53,80 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
 
     except WebSocketDisconnect:
-        print("Client disconnected")
+        print("[WS] Client disconnected")
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        print(f"[WS] Error: {e}")
+
+
+def create_fallback_title(prompt: str) -> str:
+    clean = re.sub(r"\s+", " ", prompt).strip()
+    words = clean.split(" ")
+    if len(words) > 5:
+        title = " ".join(words[:5]) + "..."
+    else:
+        title = clean
+    return title[:35]
+
+
+async def auto_generate_title(
+    websocket: WebSocket, chat_id: str, first_user_message: str
+):
+    # Hardcode the dedicated, fast 1.5B model for titling
+    title_model = "hf.co/Goekdeniz-Guelmez/Josiefied-Qwen2.5-1.5B-Instruct-abliterated-v3-gguf:Q5_K_M"
+
+    # Short pause to let Ollama free its streaming runner
+    await asyncio.sleep(0.5)
+
+    # Enhanced prompt for higher quality titles
+    prompt = f"Analyze the following user query and generate a highly descriptive, punchy title in 4 words or less. Output EXACTLY the title text and absolutely nothing else. Do not use quotes, markdown, punctuation, or preamble.\n\nQuery: {first_user_message}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            res = await client.post(
+                "http://localhost:11434/api/chat",
+                json={
+                    "model": title_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                },
+            )
+            if res.status_code == 200:
+                raw_text = res.json().get("message", {}).get("content", "")
+
+                # Strip out <think>...</think> reasoning blocks
+                clean_text = re.sub(
+                    r"<think>.*?</think>", "", raw_text, flags=re.DOTALL
+                )
+                title = clean_text.strip(" \n\"'.*#:-")
+
+                if title:
+                    print(
+                        f"[AutoTitle] LLM Title Generated: '{title}' for chat {chat_id}"
+                    )
+                    async with store.modify_chat(chat_id) as chat_tree:
+                        chat_tree["title"] = title
+
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "event": "title_updated",
+                                "data": {"chat_id": chat_id, "title": title},
+                            }
+                        )
+                    )
+            else:
+                print(f"[AutoTitle] Ollama HTTP status: {res.status_code}")
+    except Exception as e:
+        print(f"[AutoTitle] LLM titling failed ({e}), retaining fallback title.")
 
 
 async def generate_response_stream(
     websocket: WebSocket, chat_id: str, engine: str, model: str
 ):
     new_node_id = None
+    first_user_content = None
+    user_msg_count = 0
+
     try:
         chat_tree = await store.read_chat(chat_id)
         nodes = chat_tree.get("nodes", {})
@@ -71,15 +137,33 @@ async def generate_response_stream(
         while curr_id and curr_id in nodes:
             node = nodes[curr_id]
             if node.get("content"):
-                messages.append(
-                    {
-                        "role": node.get("role", "user"),
-                        "content": node.get("content", ""),
-                    }
-                )
+                role = node.get("role", "user")
+                messages.append({"role": role, "content": node.get("content", "")})
+                if role == "user":
+                    user_msg_count += 1
+                    first_user_content = node.get("content")
             curr_id = node.get("parent_id")
 
         messages.reverse()
+
+        # 1. Set immediate fallback title if chat is new
+        if user_msg_count == 1 and first_user_content:
+            current_title = chat_tree.get("title", "New Chat")
+            if current_title == "New Chat":
+                fallback_title = create_fallback_title(first_user_content)
+                print(
+                    f"[AutoTitle] Setting immediate fallback title: '{fallback_title}'"
+                )
+                async with store.modify_chat(chat_id) as chat_tree_mod:
+                    chat_tree_mod["title"] = fallback_title
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "event": "title_updated",
+                            "data": {"chat_id": chat_id, "title": fallback_title},
+                        }
+                    )
+                )
 
         async with store.modify_chat(chat_id) as chat_tree:
             nodes = chat_tree.setdefault("nodes", {})
@@ -101,8 +185,6 @@ async def generate_response_stream(
 
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("POST", url, json=payload) as response:
-
-                # 1. Catch outright HTTP rejections (e.g., 400 Bad Request, 404 Not Found)
                 if response.status_code != 200:
                     err_bytes = await response.aread()
                     raise Exception(
@@ -114,7 +196,6 @@ async def generate_response_stream(
                         continue
                     chunk_data = json.loads(line)
 
-                    # 2. Catch silent JSON errors embedded in a 200 OK stream
                     if "error" in chunk_data:
                         raise Exception(f"{chunk_data['error']}")
 
@@ -146,6 +227,10 @@ async def generate_response_stream(
             json.dumps({"event": "stream_end", "data": {"chat_id": chat_id}})
         )
 
+        # 2. Refine title in background via LLM after streaming finishes
+        if user_msg_count == 1 and first_user_content:
+            await auto_generate_title(websocket, chat_id, first_user_content)
+
     except asyncio.CancelledError:
         print(f"Generation cancelled for chat {chat_id}")
         await websocket.send_text(
@@ -154,9 +239,7 @@ async def generate_response_stream(
 
     except Exception as e:
         print(f"Generation error: {e}")
-        # 3. Inject the caught error directly into the chat UI as an assistant message
         error_msg = f"⚠️ **Ollama Error:** {str(e)}"
-
         if new_node_id:
             async with store.modify_chat(chat_id) as chat_tree:
                 if new_node_id in chat_tree.get("nodes", {}):

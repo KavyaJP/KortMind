@@ -116,7 +116,7 @@ function App() {
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         <header className="flex items-center justify-between bg-gray-800 p-4 shadow-md z-10">
-          <h1 className="text-xl font-bold text-white">Local Grok</h1>
+          <h1 className="text-xl font-bold text-white">KortMind</h1>
           <div className="flex items-center gap-4">
             {isModelLoading && (
               <span className="text-sm text-blue-400 animate-pulse font-medium">Switching models...</span>
@@ -149,8 +149,8 @@ function App() {
               <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div
                   className={`max-w-[80%] rounded-xl p-4 shadow-sm whitespace-pre-wrap ${msg.role === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-700 text-gray-100 border border-gray-600'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-100 border border-gray-600'
                     }`}
                 >
                   {msg.content}

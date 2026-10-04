@@ -1,5 +1,6 @@
 import os
 import time
+import httpx
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -17,6 +18,11 @@ class NodeCreate(BaseModel):
 
 class ChatUpdate(BaseModel):
     title: str
+
+
+class AutoTitleRequest(BaseModel):
+    prompt: str
+    model: str
 
 
 @router.get("/chat")
@@ -102,3 +108,37 @@ async def rename_chat(chat_id: str, update: ChatUpdate):
 async def delete_chat(chat_id: str):
     success = await store.delete_chat(chat_id)
     return {"status": "success" if success else "error"}
+
+
+@router.post("/{chat_id}/title/auto")
+async def auto_generate_title(chat_id: str, req: AutoTitleRequest):
+    prompt = f"Summarize this message into a concise chat title (maximum 4 words). Respond ONLY with the title. Do not include quotes, punctuation, labels, or any introductory text.\n\nMessage: {req.prompt}"
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # Switched to /api/chat and formatted as a messages array
+            res = await client.post(
+                "http://localhost:11434/api/chat",
+                json={
+                    "model": req.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                },
+            )
+
+            if res.status_code == 200:
+                data = res.json()
+                # The chat API returns the response inside message -> content
+                raw_title = data.get("message", {}).get("content", "")
+
+                # Strip out any lingering punctuation or quotes
+                title = raw_title.strip(" \n\"'.*#")
+
+                if title:
+                    async with store.modify_chat(chat_id) as chat_tree:
+                        chat_tree["title"] = title
+                    return {"title": title}
+    except Exception as e:
+        print(f"Title generation failed: {e}")
+
+    return {"status": "error"}

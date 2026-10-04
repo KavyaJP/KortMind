@@ -12,24 +12,55 @@ export const useChatStore = create((set, get) => ({
   activeLeafId: null,
   ws: null,
 
-  fetchModels: async () => {
+  fetchModels: async (retryCount = 0) => {
     try {
       const res = await fetch("http://localhost:20559/api/models");
       const data = await res.json();
-      if (data.models && data.models.length > 0) {
-        set({ models: data.models });
-        // Only auto-select if nothing is currently selected
-        if (!get().selectedModel) {
-          set({ selectedModel: data.models[0] });
+      const availableModels = data.models || [];
+
+      if (availableModels.length > 0) {
+        set({ models: availableModels });
+
+        // Retrieve last used model from localStorage
+        const savedModel = localStorage.getItem("lastSelectedModel");
+
+        let targetModel = availableModels[0]; // Default fallback
+
+        if (savedModel && availableModels.includes(savedModel)) {
+          targetModel = savedModel;
+        } else {
+          // If saved model wasn't found or isn't set, persist the default
+          localStorage.setItem("lastSelectedModel", targetModel);
         }
+
+        set({ selectedModel: targetModel });
+
+        // Sync selected model with backend engine
+        fetch("http://localhost:20559/api/models/switch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: targetModel }),
+        }).catch((err) => console.error("Failed to sync initial model:", err));
+      } else if (retryCount < 4) {
+        // Retry loop if frontend loads before backend fully exposes models
+        console.warn(
+          `[useChatStore] Model list empty, retrying... (${retryCount + 1}/4)`,
+        );
+        setTimeout(() => get().fetchModels(retryCount + 1), 1500);
       }
     } catch (error) {
       console.error("Failed to fetch models", error);
+      if (retryCount < 4) {
+        setTimeout(() => get().fetchModels(retryCount + 1), 1500);
+      }
     }
   },
 
   setSelectedModel: async (model) => {
     set({ selectedModel: model, isModelLoading: true });
+    // Persist choice immediately
+    localStorage.setItem("lastSelectedModel", model);
+
     try {
       await fetch("http://localhost:20559/api/models/switch", {
         method: "POST",
@@ -75,16 +106,16 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
-  renameChat: async (chatId, newTitle) => {
+  renameChat: async (targetChatId, newTitle) => {
     try {
-      await fetch(`http://localhost:20559/api/chat/${chatId}`, {
+      await fetch(`http://localhost:20559/api/chat/${targetChatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: newTitle }),
       });
       set((state) => ({
         chatList: state.chatList.map((c) =>
-          c.id === chatId ? { ...c, title: newTitle } : c,
+          c.id === targetChatId ? { ...c, title: newTitle } : c,
         ),
       }));
     } catch (error) {
@@ -153,7 +184,6 @@ export const useChatStore = create((set, get) => ({
 
       if (payload.event === "token_chunk") {
         const { node_id, chunk, chat_id } = payload.data;
-
         if (get().chatId !== chat_id) return;
 
         set((state) => {
@@ -167,6 +197,13 @@ export const useChatStore = create((set, get) => ({
           }
           return { messages, activeLeafId: node_id };
         });
+      } else if (payload.event === "title_updated") {
+        const { chat_id, title } = payload.data;
+        set((state) => ({
+          chatList: state.chatList.map((c) =>
+            c.id === chat_id ? { ...c, title } : c,
+          ),
+        }));
       } else if (payload.event === "stream_end") {
         set({ isGenerating: false });
       } else if (payload.event === "error") {
@@ -198,11 +235,21 @@ export const useChatStore = create((set, get) => ({
       activeLeafId,
       ws,
       selectedModel,
+      models,
       isGenerating,
       isModelLoading,
     } = get();
     if (!content.trim() || !ws || isGenerating || isModelLoading || !chatId)
       return;
+
+    // Failsafe to prevent 400 error if models are genuinely missing
+    const targetModel = selectedModel || models[0];
+    if (!targetModel) {
+      alert(
+        "No model selected or loaded yet. Please wait a moment or ensure Ollama has models pulled.",
+      );
+      return;
+    }
 
     set({ isGenerating: true });
 
@@ -240,9 +287,7 @@ export const useChatStore = create((set, get) => ({
           data: {
             chat_id: chatId,
             engine: "ollama",
-            model:
-              selectedModel ||
-              "hf.co/bartowski/TheDrummer_Cydonia-24B-v4.3-GGUF:Q3_K_M",
+            model: targetModel,
           },
         }),
       );
