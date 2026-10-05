@@ -2,12 +2,11 @@ import os
 import time
 import httpx
 from typing import Optional
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from app.services.chat_store import ChatStore
+from app.services.chat_store import chat_store
 
 router = APIRouter(tags=["chat"])
-store = ChatStore()
 
 
 class NodeCreate(BaseModel):
@@ -25,89 +24,88 @@ class AutoTitleRequest(BaseModel):
     model: str
 
 
+class SetActiveLeafRequest(BaseModel):
+    leaf_id: str
+
+
 @router.get("/chat")
 async def list_chats():
-    chats = []
-    if os.path.exists(store.data_dir):
-        for filename in os.listdir(store.data_dir):
-            if filename.endswith(".json"):
-                chat_id = filename[:-5]
-                # Read the file to get the title field
-                chat_tree = await store.read_chat(chat_id)
-                title = chat_tree.get("title", chat_id)
-                chats.append({"id": chat_id, "title": title})
-
-    chats.sort(key=lambda x: x["id"], reverse=True)
+    summaries = await chat_store.list_chats()
+    chats = [{"id": s["chat_id"], "title": s["title"]} for s in summaries]
     return {"status": "success", "chats": chats}
 
 
 @router.post("/chat")
 async def create_chat():
-    chat_id = f"chat-{int(time.time())}"
-    async with store.modify_chat(chat_id) as chat_tree:
-        chat_tree["title"] = "New Chat"
-        chat_tree["nodes"] = {}
-        chat_tree["active_leaf_id"] = None
-    return {"status": "success", "chat_id": chat_id, "title": "New Chat"}
+    chat_data = await chat_store.create_chat()
+    return {
+        "status": "success",
+        "chat_id": chat_data["chat_id"],
+        "title": chat_data["title"],
+    }
 
 
 @router.get("/chat/{chat_id}/history")
 async def get_chat_history(chat_id: str):
-    chat_tree = await store.read_chat(chat_id)
-    if not chat_tree or "nodes" not in chat_tree:
-        return {"status": "success", "messages": []}
-
-    nodes = chat_tree.get("nodes", {})
-    curr_id = chat_tree.get("active_leaf_id")
-    history = []
-
-    while curr_id and curr_id in nodes:
-        node = nodes[curr_id]
-        history.append(
-            {
-                "id": node.get("id"),
-                "role": node.get("role"),
-                "content": node.get("content"),
-            }
-        )
-        curr_id = node.get("parent_id")
-
-    return {"status": "success", "messages": list(reversed(history))}
+    # Now returning the FULL tree so the frontend can calculate branches
+    try:
+        chat = await chat_store.get_chat(chat_id)
+        if not chat:
+            return {"status": "success", "nodes": {}, "active_leaf_id": None}
+        return {
+            "status": "success",
+            "nodes": chat.get("nodes", {}),
+            "active_leaf_id": chat.get("active_leaf_id"),
+        }
+    except ValueError:
+        return {"status": "success", "nodes": {}, "active_leaf_id": None}
 
 
 @router.post("/chat/{chat_id}/nodes")
 async def add_node(chat_id: str, node: NodeCreate):
-    async with store.modify_chat(chat_id) as chat_tree:
-        nodes = chat_tree.setdefault("nodes", {})
-        new_node_id = f"node-{len(nodes) + 1}"
+    try:
+        parent_id = node.parent_id
+        if not parent_id:
+            chat_data = await chat_store.get_chat(chat_id)
+            if chat_data:
+                parent_id = chat_data.get("active_leaf_id", "root")
+            else:
+                parent_id = "root"
 
-        nodes[new_node_id] = {
-            "id": new_node_id,
-            "parent_id": node.parent_id,
-            "children_ids": [],
-            "role": node.role,
-            "content": node.content,
-        }
-
-        if node.parent_id and node.parent_id in nodes:
-            nodes[node.parent_id].setdefault("children_ids", []).append(new_node_id)
-
-        chat_tree["active_leaf_id"] = new_node_id
-
-    return {"status": "success", "node_id": new_node_id}
+        new_node = await chat_store.add_node(
+            chat_id=chat_id, parent_id=parent_id, role=node.role, content=node.content
+        )
+        return {"status": "success", "node_id": new_node["id"]}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.patch("/chat/{chat_id}")
 async def rename_chat(chat_id: str, update: ChatUpdate):
-    async with store.modify_chat(chat_id) as chat_tree:
-        chat_tree["title"] = update.title
+    async with chat_store._get_lock(chat_id):
+        chat = await chat_store._load_chat_unlocked(chat_id)
+        if chat:
+            chat["title"] = update.title
+            await chat_store._save_chat_to_disk(chat_id, chat)
     return {"status": "success", "title": update.title}
 
 
 @router.delete("/chat/{chat_id}")
 async def delete_chat(chat_id: str):
-    success = await store.delete_chat(chat_id)
-    return {"status": "success" if success else "error"}
+    file_path = chat_store._get_file_path(chat_id)
+    if file_path.exists():
+        file_path.unlink()
+        return {"status": "success"}
+    return {"status": "error"}
+
+
+@router.post("/chat/{chat_id}/active-leaf")
+async def set_active_branch(chat_id: str, req: SetActiveLeafRequest):
+    try:
+        await chat_store.set_active_leaf(chat_id, req.leaf_id)
+        return {"status": "success", "active_leaf_id": req.leaf_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/{chat_id}/title/auto")
@@ -116,7 +114,6 @@ async def auto_generate_title(chat_id: str, req: AutoTitleRequest):
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # Switched to /api/chat and formatted as a messages array
             res = await client.post(
                 "http://localhost:11434/api/chat",
                 json={
@@ -128,15 +125,15 @@ async def auto_generate_title(chat_id: str, req: AutoTitleRequest):
 
             if res.status_code == 200:
                 data = res.json()
-                # The chat API returns the response inside message -> content
                 raw_title = data.get("message", {}).get("content", "")
-
-                # Strip out any lingering punctuation or quotes
                 title = raw_title.strip(" \n\"'.*#")
 
                 if title:
-                    async with store.modify_chat(chat_id) as chat_tree:
-                        chat_tree["title"] = title
+                    async with chat_store._get_lock(chat_id):
+                        chat = await chat_store._load_chat_unlocked(chat_id)
+                        if chat:
+                            chat["title"] = title
+                            await chat_store._save_chat_to_disk(chat_id, chat)
                     return {"title": title}
     except Exception as e:
         print(f"Title generation failed: {e}")

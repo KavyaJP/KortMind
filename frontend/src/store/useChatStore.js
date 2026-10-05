@@ -1,8 +1,44 @@
 import { create } from "zustand";
 
+const buildLinearPath = (nodes, activeLeafId) => {
+  if (!activeLeafId || !nodes[activeLeafId]) return [];
+  const path = [];
+  let currId = activeLeafId;
+
+  while (currId && nodes[currId]) {
+    path.push(nodes[currId]);
+    currId = nodes[currId].parent_id;
+  }
+  path.reverse();
+
+  return path
+    .filter((n) => n.id !== "root")
+    .map((node) => {
+      let branchIndex = 1;
+      let branchCount = 1;
+      let siblingIds = [];
+
+      if (node.parent_id && nodes[node.parent_id]) {
+        siblingIds = nodes[node.parent_id].children_ids || [];
+        branchCount = siblingIds.length;
+        branchIndex = siblingIds.indexOf(node.id) + 1;
+      }
+
+      return {
+        id: node.id,
+        role: node.role,
+        content: node.content,
+        branchIndex,
+        branchCount,
+        siblingIds,
+      };
+    });
+};
+
 export const useChatStore = create((set, get) => ({
   chatList: [],
   chatId: null,
+  nodes: {},
   messages: [],
   models: [],
   selectedModel: "",
@@ -20,36 +56,26 @@ export const useChatStore = create((set, get) => ({
 
       if (availableModels.length > 0) {
         set({ models: availableModels });
-
-        // Retrieve last used model from localStorage
         const savedModel = localStorage.getItem("lastSelectedModel");
-
-        let targetModel = availableModels[0]; // Default fallback
+        let targetModel = availableModels[0];
 
         if (savedModel && availableModels.includes(savedModel)) {
           targetModel = savedModel;
         } else {
-          // If saved model wasn't found or isn't set, persist the default
           localStorage.setItem("lastSelectedModel", targetModel);
         }
 
         set({ selectedModel: targetModel });
 
-        // Sync selected model with backend engine
         fetch("http://localhost:20559/api/models/switch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model: targetModel }),
         }).catch((err) => console.error("Failed to sync initial model:", err));
       } else if (retryCount < 4) {
-        // Retry loop if frontend loads before backend fully exposes models
-        console.warn(
-          `[useChatStore] Model list empty, retrying... (${retryCount + 1}/4)`,
-        );
         setTimeout(() => get().fetchModels(retryCount + 1), 1500);
       }
     } catch (error) {
-      console.error("Failed to fetch models", error);
       if (retryCount < 4) {
         setTimeout(() => get().fetchModels(retryCount + 1), 1500);
       }
@@ -58,7 +84,6 @@ export const useChatStore = create((set, get) => ({
 
   setSelectedModel: async (model) => {
     set({ selectedModel: model, isModelLoading: true });
-    // Persist choice immediately
     localStorage.setItem("lastSelectedModel", model);
 
     try {
@@ -98,6 +123,7 @@ export const useChatStore = create((set, get) => ({
       set((state) => ({
         chatList: [{ id: data.chat_id, title: data.title }, ...state.chatList],
         chatId: data.chat_id,
+        nodes: {},
         messages: [],
         activeLeafId: null,
       }));
@@ -145,7 +171,7 @@ export const useChatStore = create((set, get) => ({
       if (chatId) {
         get().loadChat(chatId);
       } else {
-        set({ messages: [], activeLeafId: null });
+        set({ messages: [], nodes: {}, activeLeafId: null });
       }
     } catch (error) {
       console.error("Failed to delete chat", error);
@@ -159,13 +185,14 @@ export const useChatStore = create((set, get) => ({
       );
       const data = await res.json();
 
-      const msgs = data.messages || [];
-      const leafId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+      const nodes = data.nodes || {};
+      const leafId = data.active_leaf_id;
 
       set({
         chatId,
-        messages: msgs,
+        nodes,
         activeLeafId: leafId,
+        messages: buildLinearPath(nodes, leafId),
       });
     } catch (error) {
       console.error(`Failed to load chat ${chatId}`, error);
@@ -187,15 +214,33 @@ export const useChatStore = create((set, get) => ({
         if (get().chatId !== chat_id) return;
 
         set((state) => {
-          const messages = [...state.messages];
-          const lastMsgIndex = messages.length - 1;
+          const newNodes = { ...state.nodes };
 
-          if (messages[lastMsgIndex]?.id === node_id) {
-            messages[lastMsgIndex].content += chunk;
-          } else {
-            messages.push({ id: node_id, role: "assistant", content: chunk });
+          if (!newNodes[node_id]) {
+            const parentId = state.activeLeafId;
+            newNodes[node_id] = {
+              id: node_id,
+              parent_id: parentId,
+              children_ids: [],
+              role: "assistant",
+              content: "",
+            };
+            if (
+              parentId &&
+              newNodes[parentId] &&
+              !newNodes[parentId].children_ids.includes(node_id)
+            ) {
+              newNodes[parentId].children_ids.push(node_id);
+            }
           }
-          return { messages, activeLeafId: node_id };
+
+          newNodes[node_id].content += chunk;
+
+          return {
+            nodes: newNodes,
+            activeLeafId: node_id,
+            messages: buildLinearPath(newNodes, node_id),
+          };
         });
       } else if (payload.event === "title_updated") {
         const { chat_id, title } = payload.data;
@@ -207,7 +252,6 @@ export const useChatStore = create((set, get) => ({
       } else if (payload.event === "stream_end") {
         set({ isGenerating: false });
       } else if (payload.event === "error") {
-        console.error("WebSocket Error:", payload.data);
         set({ isGenerating: false });
       }
     };
@@ -220,13 +264,102 @@ export const useChatStore = create((set, get) => ({
     if (!ws || !isGenerating || !chatId) return;
 
     ws.send(
-      JSON.stringify({
-        event: "stop_generation",
-        data: { chat_id: chatId },
-      }),
+      JSON.stringify({ event: "stop_generation", data: { chat_id: chatId } }),
     );
-
     set({ isGenerating: false });
+  },
+
+  switchBranch: async (siblingId) => {
+    const { chatId, nodes } = get();
+    if (!chatId || !siblingId || !nodes[siblingId]) return;
+
+    let currId = siblingId;
+    while (
+      nodes[currId] &&
+      nodes[currId].children_ids &&
+      nodes[currId].children_ids.length > 0
+    ) {
+      const children = nodes[currId].children_ids;
+      currId = children[children.length - 1];
+    }
+
+    const newLeafId = currId;
+
+    set({
+      activeLeafId: newLeafId,
+      messages: buildLinearPath(nodes, newLeafId),
+    });
+
+    try {
+      await fetch(`http://localhost:20559/api/chat/${chatId}/active-leaf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leaf_id: newLeafId }),
+      });
+    } catch (e) {
+      console.error("Failed to sync branch switch", e);
+    }
+  },
+
+  regenerateMessage: async (msgId) => {
+    const { nodes, chatId, ws, selectedModel, models } = get();
+    const targetModel = selectedModel || models[0];
+    const msgNode = nodes[msgId];
+
+    if (!msgNode || msgNode.role !== "assistant") return;
+
+    const parentId = msgNode.parent_id;
+
+    set({
+      isGenerating: true,
+      activeLeafId: parentId,
+      messages: buildLinearPath(nodes, parentId),
+    });
+
+    try {
+      await fetch(`http://localhost:20559/api/chat/${chatId}/active-leaf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leaf_id: parentId }),
+      });
+
+      ws.send(
+        JSON.stringify({
+          event: "send_message",
+          data: { chat_id: chatId, engine: "ollama", model: targetModel },
+        }),
+      );
+    } catch (e) {
+      console.error(e);
+      set({ isGenerating: false });
+    }
+  },
+
+  submitEdit: async (msgId, newContent) => {
+    const { nodes, chatId } = get();
+    const msgNode = nodes[msgId];
+    if (!msgNode || msgNode.role !== "user") return;
+
+    const parentId = msgNode.parent_id || "root";
+
+    // 1. Rollback the active tree to the parent of the edited message
+    set({
+      activeLeafId: parentId,
+      messages: buildLinearPath(nodes, parentId),
+    });
+
+    try {
+      await fetch(`http://localhost:20559/api/chat/${chatId}/active-leaf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leaf_id: parentId }),
+      });
+    } catch (e) {
+      console.error("Failed to sync edit rollback", e);
+    }
+
+    // 2. Fire the new content as a standard message. It will automatically branch off the rolled-back parent.
+    get().sendMessage(newContent);
   },
 
   sendMessage: async (content) => {
@@ -242,21 +375,50 @@ export const useChatStore = create((set, get) => ({
     if (!content.trim() || !ws || isGenerating || isModelLoading || !chatId)
       return;
 
-    // Failsafe to prevent 400 error if models are genuinely missing
     const targetModel = selectedModel || models[0];
     if (!targetModel) {
-      alert(
-        "No model selected or loaded yet. Please wait a moment or ensure Ollama has models pulled.",
-      );
+      alert("No model selected or loaded yet.");
       return;
     }
 
     set({ isGenerating: true });
 
     const tempUserId = `temp-${Date.now()}`;
-    set((state) => ({
-      messages: [...state.messages, { id: tempUserId, role: "user", content }],
-    }));
+    set((state) => {
+      const newNodes = { ...state.nodes };
+      const parentId = state.activeLeafId || "root";
+
+      if (!newNodes["root"]) {
+        newNodes["root"] = {
+          id: "root",
+          parent_id: null,
+          children_ids: [],
+          role: "system",
+          content: "",
+        };
+      }
+
+      newNodes[tempUserId] = {
+        id: tempUserId,
+        parent_id: parentId,
+        children_ids: [],
+        role: "user",
+        content: content,
+      };
+
+      if (
+        newNodes[parentId] &&
+        !newNodes[parentId].children_ids.includes(tempUserId)
+      ) {
+        newNodes[parentId].children_ids.push(tempUserId);
+      }
+
+      return {
+        nodes: newNodes,
+        activeLeafId: tempUserId,
+        messages: buildLinearPath(newNodes, tempUserId),
+      };
+    });
 
     try {
       const res = await fetch(
@@ -274,21 +436,35 @@ export const useChatStore = create((set, get) => ({
       const data = await res.json();
       const actualNodeId = data.node_id;
 
-      set((state) => ({
-        activeLeafId: actualNodeId,
-        messages: state.messages.map((m) =>
-          m.id === tempUserId ? { ...m, id: actualNodeId } : m,
-        ),
-      }));
+      set((state) => {
+        const updatedNodes = { ...state.nodes };
+        const tempNode = updatedNodes[tempUserId];
+
+        if (tempNode) {
+          updatedNodes[actualNodeId] = { ...tempNode, id: actualNodeId };
+          delete updatedNodes[tempUserId];
+
+          const parentId = updatedNodes[actualNodeId].parent_id;
+          if (parentId && updatedNodes[parentId]) {
+            updatedNodes[parentId].children_ids = updatedNodes[
+              parentId
+            ].children_ids.map((id) => (id === tempUserId ? actualNodeId : id));
+          }
+        }
+
+        const newActiveLeafId =
+          state.activeLeafId === tempUserId ? actualNodeId : state.activeLeafId;
+        return {
+          nodes: updatedNodes,
+          activeLeafId: newActiveLeafId,
+          messages: buildLinearPath(updatedNodes, newActiveLeafId),
+        };
+      });
 
       ws.send(
         JSON.stringify({
           event: "send_message",
-          data: {
-            chat_id: chatId,
-            engine: "ollama",
-            model: targetModel,
-          },
+          data: { chat_id: chatId, engine: "ollama", model: targetModel },
         }),
       );
     } catch (error) {

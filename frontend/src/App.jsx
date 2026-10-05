@@ -6,12 +6,17 @@ function App() {
     chatList, chatId, messages, isConnected, isGenerating,
     models, selectedModel, fetchModels, setSelectedModel, isModelLoading,
     connect, fetchChatList, createNewChat, loadChat, sendMessage,
-    renameChat, deleteChat, stopGeneration
+    renameChat, deleteChat, stopGeneration, switchBranch, regenerateMessage, submitEdit
   } = useChatStore();
 
   const [input, setInput] = useState('');
   const [editingChatId, setEditingChatId] = useState(null);
   const [editTitle, setEditTitle] = useState('');
+
+  // Message Edit State
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingMessageContent, setEditingMessageContent] = useState('');
+
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
@@ -147,13 +152,99 @@ function App() {
           ) : (
             messages.map((msg) => (
               <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div
-                  className={`max-w-[80%] rounded-xl p-4 shadow-sm whitespace-pre-wrap ${msg.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-100 border border-gray-600'
-                    }`}
-                >
-                  {msg.content}
+                <div className={`flex flex-col gap-1 w-full max-w-[80%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+
+                  {/* Message Content or Edit Input */}
+                  {editingMessageId === msg.id ? (
+                    <div className="w-full flex flex-col gap-2 bg-gray-800 p-3 rounded-xl border border-gray-600">
+                      <textarea
+                        className="w-full rounded-lg bg-gray-900 border border-gray-700 p-3 text-white focus:outline-none focus:border-blue-500"
+                        value={editingMessageContent}
+                        onChange={(e) => setEditingMessageContent(e.target.value)}
+                        rows={4}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => setEditingMessageId(null)}
+                          className="px-4 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 rounded-lg text-white font-medium transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (editingMessageContent.trim()) {
+                              submitEdit(msg.id, editingMessageContent);
+                              setEditingMessageId(null);
+                            }
+                          }}
+                          disabled={!editingMessageContent.trim()}
+                          className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg text-white font-medium transition-colors disabled:opacity-50"
+                        >
+                          Save & Submit
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className={`rounded-xl p-4 shadow-sm whitespace-pre-wrap ${msg.role === 'user'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-700 text-gray-100 border border-gray-600'
+                        }`}
+                    >
+                      {msg.content}
+                    </div>
+                  )}
+
+                  {/* Branch Controls & Actions */}
+                  {editingMessageId !== msg.id && (
+                    <div className={`flex items-center gap-4 text-xs font-medium px-1 ${msg.role === 'user' ? 'justify-end text-blue-300' : 'justify-start text-gray-400'}`}>
+
+                      {msg.branchCount > 1 && (
+                        <div className="flex items-center gap-2 bg-gray-800/50 px-2 py-1 rounded-md">
+                          <button
+                            onClick={() => switchBranch(msg.siblingIds[msg.branchIndex - 2])}
+                            disabled={msg.branchIndex <= 1}
+                            className="hover:text-white disabled:opacity-30 transition-colors"
+                            title="Previous Branch"
+                          >
+                            ◀
+                          </button>
+                          <span>{msg.branchIndex} / {msg.branchCount}</span>
+                          <button
+                            onClick={() => switchBranch(msg.siblingIds[msg.branchIndex])}
+                            disabled={msg.branchIndex >= msg.branchCount}
+                            className="hover:text-white disabled:opacity-30 transition-colors"
+                            title="Next Branch"
+                          >
+                            ▶
+                          </button>
+                        </div>
+                      )}
+
+                      {msg.role === 'assistant' && !isGenerating && (
+                        <button
+                          onClick={() => regenerateMessage(msg.id)}
+                          className="hover:text-white flex items-center gap-1 transition-colors"
+                          title="Regenerate from here"
+                        >
+                          ↻ Regenerate
+                        </button>
+                      )}
+
+                      {msg.role === 'user' && !isGenerating && (
+                        <button
+                          onClick={() => {
+                            setEditingMessageId(msg.id);
+                            setEditingMessageContent(msg.content);
+                          }}
+                          className="hover:text-white flex items-center gap-1 transition-colors"
+                          title="Edit message"
+                        >
+                          ✎ Edit
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             ))

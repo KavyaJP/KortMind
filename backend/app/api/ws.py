@@ -3,10 +3,9 @@ import asyncio
 import re
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from app.services.chat_store import ChatStore
+from app.services.chat_store import chat_store
 
 router = APIRouter(tags=["websocket"])
-store = ChatStore()
 
 active_tasks = {}
 
@@ -71,13 +70,10 @@ def create_fallback_title(prompt: str) -> str:
 async def auto_generate_title(
     websocket: WebSocket, chat_id: str, first_user_message: str
 ):
-    # Hardcode the dedicated, fast 1.5B model for titling
     title_model = "hf.co/Goekdeniz-Guelmez/Josiefied-Qwen2.5-1.5B-Instruct-abliterated-v3-gguf:Q5_K_M"
 
-    # Short pause to let Ollama free its streaming runner
     await asyncio.sleep(0.5)
 
-    # Enhanced prompt for higher quality titles
     prompt = f"Analyze the following user query and generate a highly descriptive, punchy title in 4 words or less. Output EXACTLY the title text and absolutely nothing else. Do not use quotes, markdown, punctuation, or preamble.\n\nQuery: {first_user_message}"
 
     try:
@@ -93,7 +89,6 @@ async def auto_generate_title(
             if res.status_code == 200:
                 raw_text = res.json().get("message", {}).get("content", "")
 
-                # Strip out <think>...</think> reasoning blocks
                 clean_text = re.sub(
                     r"<think>.*?</think>", "", raw_text, flags=re.DOTALL
                 )
@@ -103,8 +98,12 @@ async def auto_generate_title(
                     print(
                         f"[AutoTitle] LLM Title Generated: '{title}' for chat {chat_id}"
                     )
-                    async with store.modify_chat(chat_id) as chat_tree:
-                        chat_tree["title"] = title
+
+                    async with chat_store._get_lock(chat_id):
+                        chat_tree = await chat_store._load_chat_unlocked(chat_id)
+                        if chat_tree:
+                            chat_tree["title"] = title
+                            await chat_store._save_chat_to_disk(chat_id, chat_tree)
 
                     await websocket.send_text(
                         json.dumps(
@@ -128,7 +127,10 @@ async def generate_response_stream(
     user_msg_count = 0
 
     try:
-        chat_tree = await store.read_chat(chat_id)
+        chat_tree = await chat_store.get_chat(chat_id)
+        if not chat_tree:
+            raise ValueError(f"Chat {chat_id} not found")
+
         nodes = chat_tree.get("nodes", {})
         leaf_id = chat_tree.get("active_leaf_id")
 
@@ -146,7 +148,6 @@ async def generate_response_stream(
 
         messages.reverse()
 
-        # 1. Set immediate fallback title if chat is new
         if user_msg_count == 1 and first_user_content:
             current_title = chat_tree.get("title", "New Chat")
             if current_title == "New Chat":
@@ -154,8 +155,13 @@ async def generate_response_stream(
                 print(
                     f"[AutoTitle] Setting immediate fallback title: '{fallback_title}'"
                 )
-                async with store.modify_chat(chat_id) as chat_tree_mod:
-                    chat_tree_mod["title"] = fallback_title
+
+                async with chat_store._get_lock(chat_id):
+                    chat_tree_mod = await chat_store._load_chat_unlocked(chat_id)
+                    if chat_tree_mod:
+                        chat_tree_mod["title"] = fallback_title
+                        await chat_store._save_chat_to_disk(chat_id, chat_tree_mod)
+
                 await websocket.send_text(
                     json.dumps(
                         {
@@ -165,20 +171,26 @@ async def generate_response_stream(
                     )
                 )
 
-        async with store.modify_chat(chat_id) as chat_tree:
-            nodes = chat_tree.setdefault("nodes", {})
-            new_node_id = f"node-{len(nodes) + 1}"
+        # Create the assistant's placeholder node
+        async with chat_store._get_lock(chat_id):
+            chat_tree_mod = await chat_store._load_chat_unlocked(chat_id)
+            if chat_tree_mod:
+                nodes_mod = chat_tree_mod.setdefault("nodes", {})
+                new_node_id = f"node-{len(nodes_mod) + 1}"
 
-            nodes[new_node_id] = {
-                "id": new_node_id,
-                "parent_id": leaf_id,
-                "children_ids": [],
-                "role": "assistant",
-                "content": "",
-            }
-            if leaf_id and leaf_id in nodes:
-                nodes[leaf_id].setdefault("children_ids", []).append(new_node_id)
-            chat_tree["active_leaf_id"] = new_node_id
+                nodes_mod[new_node_id] = {
+                    "id": new_node_id,
+                    "parent_id": leaf_id,
+                    "children_ids": [],
+                    "role": "assistant",
+                    "content": "",
+                }
+                if leaf_id and leaf_id in nodes_mod:
+                    nodes_mod[leaf_id].setdefault("children_ids", []).append(
+                        new_node_id
+                    )
+                chat_tree_mod["active_leaf_id"] = new_node_id
+                await chat_store._save_chat_to_disk(chat_id, chat_tree_mod)
 
         url = "http://localhost:11434/api/chat"
         payload = {"model": model, "messages": messages, "stream": True}
@@ -203,9 +215,17 @@ async def generate_response_stream(
                     token = message_data.get("content", "")
 
                     if token:
-                        async with store.modify_chat(chat_id) as chat_tree:
-                            if new_node_id in chat_tree.get("nodes", {}):
-                                chat_tree["nodes"][new_node_id]["content"] += token
+                        async with chat_store._get_lock(chat_id):
+                            chat_tree_mod = await chat_store._load_chat_unlocked(
+                                chat_id
+                            )
+                            if chat_tree_mod and new_node_id in chat_tree_mod.get(
+                                "nodes", {}
+                            ):
+                                chat_tree_mod["nodes"][new_node_id]["content"] += token
+                                await chat_store._save_chat_to_disk(
+                                    chat_id, chat_tree_mod
+                                )
 
                         await websocket.send_text(
                             json.dumps(
@@ -227,7 +247,6 @@ async def generate_response_stream(
             json.dumps({"event": "stream_end", "data": {"chat_id": chat_id}})
         )
 
-        # 2. Refine title in background via LLM after streaming finishes
         if user_msg_count == 1 and first_user_content:
             await auto_generate_title(websocket, chat_id, first_user_content)
 
@@ -241,9 +260,11 @@ async def generate_response_stream(
         print(f"Generation error: {e}")
         error_msg = f"⚠️ **Ollama Error:** {str(e)}"
         if new_node_id:
-            async with store.modify_chat(chat_id) as chat_tree:
-                if new_node_id in chat_tree.get("nodes", {}):
-                    chat_tree["nodes"][new_node_id]["content"] += error_msg
+            async with chat_store._get_lock(chat_id):
+                chat_tree_mod = await chat_store._load_chat_unlocked(chat_id)
+                if chat_tree_mod and new_node_id in chat_tree_mod.get("nodes", {}):
+                    chat_tree_mod["nodes"][new_node_id]["content"] += error_msg
+                    await chat_store._save_chat_to_disk(chat_id, chat_tree_mod)
 
             await websocket.send_text(
                 json.dumps(
