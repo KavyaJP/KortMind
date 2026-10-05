@@ -72,19 +72,20 @@ function App() {
   };
 
   return (
-    // Changed h-screen to h-[100dvh] for mobile browser address bar compatibility
-    <div className="flex h-[100dvh] w-full bg-[#111111] text-gray-100 font-sans overflow-hidden">
+    // fixed inset-0 completely locks the layout to the viewport edges, preventing mobile scroll jumps
+    <div className="fixed inset-0 flex bg-[#111111] text-gray-100 font-sans overflow-hidden">
+
       {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/60 z-20 md:hidden backdrop-blur-sm transition-opacity"
+          className="fixed inset-0 bg-black/60 z-40 md:hidden backdrop-blur-sm transition-opacity"
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
       {/* Sidebar */}
       <aside
-        className={`fixed md:static inset-y-0 left-0 z-30 w-72 md:w-64 bg-[#171717] border-r border-gray-800 flex flex-col transform transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+        className={`fixed md:static inset-y-0 left-0 z-50 w-72 md:w-64 bg-[#171717] border-r border-gray-800 flex flex-col transform transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
           }`}
       >
         <div className="p-4 flex items-center justify-between gap-2 border-b border-gray-800/50 md:border-b-0">
@@ -147,9 +148,10 @@ function App() {
       </aside>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden w-full">
-        {/* Changed from absolute positioning to flex-shrink-0 for stable layout */}
-        <header className="shrink-0 flex items-center justify-between p-3 md:p-4 z-10 bg-[#111111] border-b border-gray-800 gap-2">
+      <div className="flex-1 flex flex-col min-w-0 h-full bg-[#111111]">
+
+        {/* flex-none forces header to stay at the top */}
+        <header className="flex-none flex items-center justify-between p-3 md:p-4 bg-[#111111] border-b border-gray-800 z-10 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <button
               onClick={() => setIsSidebarOpen(true)}
@@ -179,8 +181,8 @@ function App() {
           </div>
         </header>
 
-        {/* Removed pt-20 padding since header is no longer absolute */}
-        <main className="flex-1 overflow-y-auto py-4 md:py-6 px-3 md:px-4">
+        {/* flex-1 allows this section to dynamically consume remaining space */}
+        <main className="flex-1 overflow-y-auto px-3 py-4 md:px-4 md:py-6">
           <div className="max-w-3xl mx-auto space-y-6 md:space-y-8">
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-[60vh] text-gray-500 space-y-4 text-center">
@@ -273,8 +275,8 @@ function App() {
           </div>
         </main>
 
-        {/* Added shrink-0 to prevent compression */}
-        <footer className="shrink-0 p-3 md:p-4 bg-[#111111] border-t border-gray-800">
+        {/* flex-none forces footer to stay at the bottom */}
+        <footer className="flex-none p-3 md:p-4 bg-[#111111] border-t border-gray-800 z-10 pb-safe">
           <div className="max-w-3xl mx-auto relative flex items-end gap-2 bg-[#1e1e1e] border border-gray-700 rounded-2xl p-2 focus-within:border-gray-500 focus-within:ring-1 focus-within:ring-gray-500 transition-all">
             <textarea
               ref={textareaRef}
@@ -309,6 +311,7 @@ function App() {
             Press <kbd className="font-sans bg-gray-800 px-1 py-0.5 rounded">Shift</kbd> + <kbd className="font-sans bg-gray-800 px-1 py-0.5 rounded">Enter</kbd> for a new line
           </div>
         </footer>
+
       </div>
     </div>
   );
