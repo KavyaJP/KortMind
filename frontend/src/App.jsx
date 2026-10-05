@@ -72,7 +72,6 @@ function App() {
   };
 
   return (
-    // fixed inset-0 completely locks the layout to the viewport edges, preventing mobile scroll jumps
     <div className="fixed inset-0 flex bg-[#111111] text-gray-100 font-sans overflow-hidden">
 
       {/* Mobile Sidebar Overlay */}
@@ -137,9 +136,9 @@ function App() {
               )}
 
               {!editingChatId && (
-                <div className="hidden group-hover:flex items-center gap-2 ml-2">
-                  <button onClick={() => { setEditingChatId(chat.id); setEditTitle(chat.title); }} className="text-gray-400 hover:text-white" title="Rename">✎</button>
-                  <button onClick={() => deleteChat(chat.id)} className="text-gray-400 hover:text-red-400" title="Delete">×</button>
+                <div className="flex md:hidden md:group-hover:flex items-center gap-2 ml-2 shrink-0">
+                  <button onClick={() => { setEditingChatId(chat.id); setEditTitle(chat.title); }} className="p-1 text-gray-400 hover:text-white" title="Rename">✎</button>
+                  <button onClick={() => deleteChat(chat.id)} className="p-1 text-gray-400 hover:text-red-400" title="Delete">×</button>
                 </div>
               )}
             </div>
@@ -150,7 +149,6 @@ function App() {
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0 h-full bg-[#111111]">
 
-        {/* flex-none forces header to stay at the top */}
         <header className="flex-none flex items-center justify-between p-3 md:p-4 bg-[#111111] border-b border-gray-800 z-10 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <button
@@ -181,7 +179,6 @@ function App() {
           </div>
         </header>
 
-        {/* flex-1 allows this section to dynamically consume remaining space */}
         <main className="flex-1 overflow-y-auto px-3 py-4 md:px-4 md:py-6">
           <div className="max-w-3xl mx-auto space-y-6 md:space-y-8">
             {messages.length === 0 ? (
@@ -275,7 +272,6 @@ function App() {
           </div>
         </main>
 
-        {/* flex-none forces footer to stay at the bottom */}
         <footer className="flex-none p-3 md:p-4 bg-[#111111] border-t border-gray-800 z-10 pb-safe">
           <div className="max-w-3xl mx-auto relative flex items-end gap-2 bg-[#1e1e1e] border border-gray-700 rounded-2xl p-2 focus-within:border-gray-500 focus-within:ring-1 focus-within:ring-gray-500 transition-all">
             <textarea

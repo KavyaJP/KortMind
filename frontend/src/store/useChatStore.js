@@ -1,5 +1,11 @@
 import { create } from "zustand";
 
+// Dynamically grab the IP/Hostname of whatever device is viewing the page
+const HOST =
+  typeof window !== "undefined" ? window.location.hostname : "localhost";
+const HTTP_URL = `http://${HOST}:20559`;
+const WS_URL = `ws://${HOST}:20559`;
+
 const buildLinearPath = (nodes, activeLeafId) => {
   if (!activeLeafId || !nodes[activeLeafId]) return [];
   const path = [];
@@ -50,7 +56,7 @@ export const useChatStore = create((set, get) => ({
 
   fetchModels: async (retryCount = 0) => {
     try {
-      const res = await fetch("http://localhost:20559/api/models");
+      const res = await fetch(`${HTTP_URL}/api/models`);
       const data = await res.json();
       const availableModels = data.models || [];
 
@@ -67,7 +73,7 @@ export const useChatStore = create((set, get) => ({
 
         set({ selectedModel: targetModel });
 
-        fetch("http://localhost:20559/api/models/switch", {
+        fetch(`${HTTP_URL}/api/models/switch`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model: targetModel }),
@@ -87,7 +93,7 @@ export const useChatStore = create((set, get) => ({
     localStorage.setItem("lastSelectedModel", model);
 
     try {
-      await fetch("http://localhost:20559/api/models/switch", {
+      await fetch(`${HTTP_URL}/api/models/switch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model }),
@@ -101,7 +107,7 @@ export const useChatStore = create((set, get) => ({
 
   fetchChatList: async () => {
     try {
-      const res = await fetch("http://localhost:20559/api/chat");
+      const res = await fetch(`${HTTP_URL}/api/chat`);
       const data = await res.json();
       set({ chatList: data.chats });
 
@@ -115,7 +121,7 @@ export const useChatStore = create((set, get) => ({
 
   createNewChat: async () => {
     try {
-      const res = await fetch("http://localhost:20559/api/chat", {
+      const res = await fetch(`${HTTP_URL}/api/chat`, {
         method: "POST",
       });
       const data = await res.json();
@@ -134,7 +140,7 @@ export const useChatStore = create((set, get) => ({
 
   renameChat: async (targetChatId, newTitle) => {
     try {
-      await fetch(`http://localhost:20559/api/chat/${targetChatId}`, {
+      await fetch(`${HTTP_URL}/api/chat/${targetChatId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: newTitle }),
@@ -151,7 +157,7 @@ export const useChatStore = create((set, get) => ({
 
   deleteChat: async (targetId) => {
     try {
-      await fetch(`http://localhost:20559/api/chat/${targetId}`, {
+      await fetch(`${HTTP_URL}/api/chat/${targetId}`, {
         method: "DELETE",
       });
 
@@ -180,9 +186,7 @@ export const useChatStore = create((set, get) => ({
 
   loadChat: async (chatId) => {
     try {
-      const res = await fetch(
-        `http://localhost:20559/api/chat/${chatId}/history`,
-      );
+      const res = await fetch(`${HTTP_URL}/api/chat/${chatId}/history`);
       const data = await res.json();
 
       const nodes = data.nodes || {};
@@ -201,7 +205,7 @@ export const useChatStore = create((set, get) => ({
 
   connect: () => {
     if (get().ws) return;
-    const ws = new WebSocket("ws://localhost:20559/api/ws");
+    const ws = new WebSocket(`${WS_URL}/api/ws`);
 
     ws.onopen = () => set({ isConnected: true });
     ws.onclose = () => set({ isConnected: false, ws: null });
@@ -291,7 +295,7 @@ export const useChatStore = create((set, get) => ({
     });
 
     try {
-      await fetch(`http://localhost:20559/api/chat/${chatId}/active-leaf`, {
+      await fetch(`${HTTP_URL}/api/chat/${chatId}/active-leaf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leaf_id: newLeafId }),
@@ -317,7 +321,7 @@ export const useChatStore = create((set, get) => ({
     });
 
     try {
-      await fetch(`http://localhost:20559/api/chat/${chatId}/active-leaf`, {
+      await fetch(`${HTTP_URL}/api/chat/${chatId}/active-leaf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leaf_id: parentId }),
@@ -342,14 +346,13 @@ export const useChatStore = create((set, get) => ({
 
     const parentId = msgNode.parent_id || "root";
 
-    // 1. Rollback the active tree to the parent of the edited message
     set({
       activeLeafId: parentId,
       messages: buildLinearPath(nodes, parentId),
     });
 
     try {
-      await fetch(`http://localhost:20559/api/chat/${chatId}/active-leaf`, {
+      await fetch(`${HTTP_URL}/api/chat/${chatId}/active-leaf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ leaf_id: parentId }),
@@ -358,7 +361,6 @@ export const useChatStore = create((set, get) => ({
       console.error("Failed to sync edit rollback", e);
     }
 
-    // 2. Fire the new content as a standard message. It will automatically branch off the rolled-back parent.
     get().sendMessage(newContent);
   },
 
@@ -421,18 +423,15 @@ export const useChatStore = create((set, get) => ({
     });
 
     try {
-      const res = await fetch(
-        `http://localhost:20559/api/chat/${chatId}/nodes`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            parent_id: activeLeafId,
-            role: "user",
-            content: content,
-          }),
-        },
-      );
+      const res = await fetch(`${HTTP_URL}/api/chat/${chatId}/nodes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          parent_id: activeLeafId,
+          role: "user",
+          content: content,
+        }),
+      });
       const data = await res.json();
       const actualNodeId = data.node_id;
 
