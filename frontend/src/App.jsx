@@ -5,6 +5,64 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useChatStore } from './store/useChatStore';
 
+// Helper to parse <think> tags from model output
+const parseMessageContent = (content) => {
+  if (!content) return { thought: null, main: '', isThoughtComplete: true };
+
+  const thinkStart = content.indexOf('<think>');
+  if (thinkStart === -1) return { thought: null, main: content, isThoughtComplete: true };
+
+  const thinkEnd = content.indexOf('</think>');
+  if (thinkEnd === -1) {
+    return {
+      thought: content.substring(thinkStart + 7).trimStart(),
+      main: content.substring(0, thinkStart).trim(),
+      isThoughtComplete: false
+    };
+  }
+
+  return {
+    thought: content.substring(thinkStart + 7, thinkEnd).trim(),
+    main: (content.substring(0, thinkStart) + content.substring(thinkEnd + 8)).trimStart(),
+    isThoughtComplete: true
+  };
+};
+
+// Custom component for rendering the collapsible thought process
+const ThoughtBlock = ({ thought, isComplete }) => {
+  const [isOpen, setIsOpen] = useState(!isComplete);
+
+  // Auto-collapse when thinking finishes
+  useEffect(() => {
+    setIsOpen(!isComplete);
+  }, [isComplete]);
+
+  if (!thought) return null;
+
+  return (
+    <div className="mb-4 rounded-2xl border border-gray-700/50 bg-[#171717]/60 overflow-hidden shadow-sm">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-semibold text-gray-400 hover:bg-gray-800/80 transition-colors"
+      >
+        <span className={`text-sm leading-none ${!isComplete ? 'animate-pulse' : 'opacity-70'}`}>
+          🧠
+        </span>
+        <span className="tracking-wide">{isComplete ? 'Thought Process' : 'Thinking...'}</span>
+        <span className={`ml-auto transform transition-transform duration-200 ${isOpen ? 'rotate-180' : 'rotate-0'}`}>
+          ▼
+        </span>
+      </button>
+      {isOpen && (
+        <div className="px-4 pb-4 pt-1 text-xs md:text-sm text-gray-400 whitespace-pre-wrap leading-relaxed border-t border-gray-700/30 mt-1">
+          {thought}
+          {!isComplete && <span className="animate-pulse inline-block ml-1">▌</span>}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Custom component to handle code block rendering with a copy button
 const CodeBlock = ({ node, inline, className, children, ...props }) => {
   const match = /language-(\w+)/.exec(className || '');
@@ -21,18 +79,18 @@ const CodeBlock = ({ node, inline, className, children, ...props }) => {
       <div className="relative rounded-lg overflow-hidden border border-gray-700 bg-[#1e1e1e] my-4 max-w-full">
         <div className="flex items-center justify-between px-4 py-1.5 bg-[#2d2d2d] border-b border-gray-700 text-xs text-gray-400 font-sans">
           <span className="uppercase font-semibold">{match[1]}</span>
-          <button 
-            onClick={handleCopy} 
+          <button
+            onClick={handleCopy}
             className="hover:text-white transition-colors flex items-center gap-1"
             title="Copy code"
           >
             {copied ? '✓ Copied' : '⧉ Copy'}
           </button>
         </div>
-        <SyntaxHighlighter 
-          style={vscDarkPlus} 
-          language={match[1]} 
-          PreTag="div" 
+        <SyntaxHighlighter
+          style={vscDarkPlus}
+          language={match[1]}
+          PreTag="div"
           customStyle={{ margin: 0, padding: '1rem', background: 'transparent', overflowX: 'auto' }}
           {...props}
         >
@@ -59,12 +117,15 @@ function App() {
   const [input, setInput] = useState('');
   const [editingChatId, setEditingChatId] = useState(null);
   const [editTitle, setEditTitle] = useState('');
-  
+
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingMessageContent, setEditingMessageContent] = useState('');
-  
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState(null);
+
+  // Scroll management state
+  const [isScrolledUp, setIsScrolledUp] = useState(false);
 
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
@@ -75,9 +136,31 @@ function App() {
     fetchModels();
   }, [connect, fetchChatList, fetchModels]);
 
+  // Reset scroll state when switching to a different chat
   useEffect(() => {
+    setIsScrolledUp(false);
+  }, [chatId]);
+
+  // Smart auto-scroll: only force scroll to bottom if the user hasn't manually scrolled up
+  useEffect(() => {
+    if (!isScrolledUp) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    }
+  }, [messages, isScrolledUp]);
+
+  // Detect manual scrolling
+  const handleScroll = (e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.target;
+    // If distance from bottom is > 100px, consider it "scrolled up"
+    const isUp = scrollHeight - scrollTop - clientHeight > 100;
+    setIsScrolledUp(isUp);
+  };
+
+  // Jump to bottom button handler
+  const scrollToBottom = () => {
+    setIsScrolledUp(false);
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  };
 
   // Auto-resize textarea
   useEffect(() => {
@@ -92,6 +175,7 @@ function App() {
       sendMessage(input);
       setInput('');
       if (textareaRef.current) textareaRef.current.style.height = 'auto';
+      scrollToBottom(); // Force scroll down when a new message is sent
     }
   };
 
@@ -117,28 +201,29 @@ function App() {
     setIsSidebarOpen(false);
   };
 
-  const copyFullMessage = (msgId, content) => {
-    navigator.clipboard.writeText(content);
+  const copyFullMessage = (msgId, rawContent) => {
+    const parsed = parseMessageContent(rawContent);
+    const textToCopy = parsed.main || rawContent;
+    navigator.clipboard.writeText(textToCopy.trim());
     setCopiedMessageId(msgId);
     setTimeout(() => setCopiedMessageId(null), 2000);
   };
 
   return (
     <div className="fixed inset-0 flex bg-[#111111] text-gray-100 font-sans overflow-hidden">
-      
+
       {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/60 z-40 md:hidden backdrop-blur-sm transition-opacity"
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
       {/* Sidebar */}
-      <aside 
-        className={`fixed md:static inset-y-0 left-0 z-50 w-72 md:w-64 bg-[#171717] border-r border-gray-800 flex flex-col transform transition-transform duration-300 ease-in-out ${
-          isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-        }`}
+      <aside
+        className={`fixed md:static inset-y-0 left-0 z-50 w-72 md:w-64 bg-[#171717] border-r border-gray-800 flex flex-col transform transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+          }`}
       >
         <div className="p-4 flex items-center justify-between gap-2 border-b border-gray-800/50 md:border-b-0">
           <button
@@ -161,9 +246,8 @@ function App() {
           {chatList.map((chat) => (
             <div
               key={chat.id}
-              className={`group flex items-center justify-between px-3 py-2.5 rounded-xl transition-colors ${
-                chatId === chat.id ? 'bg-gray-800' : 'hover:bg-gray-800/50'
-              }`}
+              className={`group flex items-center justify-between px-3 py-2.5 rounded-xl transition-colors ${chatId === chat.id ? 'bg-gray-800' : 'hover:bg-gray-800/50'
+                }`}
             >
               {editingChatId === chat.id ? (
                 <input
@@ -182,9 +266,8 @@ function App() {
                 <button
                   onClick={() => handleSelectChat(chat.id)}
                   disabled={isGenerating || isModelLoading || editingChatId !== null}
-                  className={`flex-1 text-left text-sm truncate ${
-                    chatId === chat.id ? 'text-white font-medium' : 'text-gray-400 hover:text-gray-200'
-                  }`}
+                  className={`flex-1 text-left text-sm truncate ${chatId === chat.id ? 'text-white font-medium' : 'text-gray-400 hover:text-gray-200'
+                    }`}
                 >
                   {chat.title}
                 </button>
@@ -201,9 +284,9 @@ function App() {
         </div>
       </aside>
 
-      {/* Main Chat Area - Set to relative for absolute floating input */}
+      {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0 h-full bg-[#111111] relative">
-        
+
         <header className="flex-none flex items-center justify-between p-3 md:p-4 bg-[#111111] border-b border-gray-800 z-10 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <button
@@ -234,8 +317,10 @@ function App() {
           </div>
         </header>
 
-        {/* Added massive bottom padding (pb-32 md:pb-48) so the latest message scrolls cleanly above the floating input */}
-        <main className="flex-1 overflow-y-auto px-3 pt-4 pb-32 md:px-4 md:pt-6 md:pb-48">
+        <main
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto px-3 pt-4 pb-32 md:px-4 md:pt-6 md:pb-48"
+        >
           <div className="max-w-3xl mx-auto space-y-6 md:space-y-8">
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-[60vh] text-gray-500 space-y-4 text-center">
@@ -245,87 +330,95 @@ function App() {
                 <p className="text-base md:text-lg font-medium text-gray-400">How can I help you today?</p>
               </div>
             ) : (
-              messages.map((msg) => (
-                <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`flex flex-col gap-2 w-full ${msg.role === 'user' ? 'max-w-[85%] md:max-w-[70%] items-end' : 'max-w-full md:max-w-[90%] items-start'}`}>
-                    
-                    {/* Message Content */}
-                    {editingMessageId === msg.id ? (
-                      <div className="w-full flex flex-col gap-3 bg-[#1e1e1e] p-3 md:p-4 rounded-2xl border border-gray-700 shadow-sm">
-                        <textarea
-                          className="w-full rounded-xl bg-[#111111] border border-gray-700 p-3 text-white focus:outline-none focus:border-blue-500 resize-none text-sm md:text-base"
-                          value={editingMessageContent}
-                          onChange={(e) => setEditingMessageContent(e.target.value)}
-                          rows={4}
-                        />
-                        <div className="flex justify-end gap-2">
-                          <button onClick={() => setEditingMessageId(null)} className="px-3 py-1.5 md:px-4 md:py-2 text-xs md:text-sm bg-gray-800 hover:bg-gray-700 rounded-lg text-white font-medium transition-colors">Cancel</button>
-                          <button 
-                            onClick={() => {
-                              if (editingMessageContent.trim()) {
-                                submitEdit(msg.id, editingMessageContent);
-                                setEditingMessageId(null);
-                              }
-                            }}
-                            disabled={!editingMessageContent.trim()}
-                            className="px-3 py-1.5 md:px-4 md:py-2 text-xs md:text-sm bg-white text-black hover:bg-gray-200 rounded-lg font-semibold transition-colors disabled:opacity-50"
-                          >
-                            Save & Send
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div
-                        className={`px-4 py-3 md:px-5 md:py-4 shadow-sm text-sm md:text-base leading-relaxed ${
-                          msg.role === 'user'
-                            ? 'bg-blue-600 text-white rounded-3xl rounded-br-sm whitespace-pre-wrap'
-                            : 'text-gray-100 w-full'
-                        }`}
-                      >
-                        {msg.role === 'assistant' ? (
-                          <div className="prose prose-invert prose-p:leading-relaxed prose-pre:bg-transparent prose-pre:p-0 prose-pre:border-0 max-w-none text-gray-100 marker:text-gray-100 text-sm md:text-base">
-                            <ReactMarkdown 
-                              remarkPlugins={[remarkGfm]} 
-                              components={{ code: CodeBlock }}
-                            >
-                              {msg.content}
-                            </ReactMarkdown>
-                          </div>
-                        ) : (
-                          msg.content
-                        )}
-                      </div>
-                    )}
-                    
-                    {/* Branch Controls & Global Copy */}
-                    {editingMessageId !== msg.id && (
-                      <div className={`flex flex-wrap items-center gap-3 md:gap-4 text-xs font-semibold px-2 mt-1 ${msg.role === 'user' ? 'justify-end text-blue-300' : 'justify-start text-gray-500'}`}>
-                        {msg.branchCount > 1 && (
-                          <div className="flex items-center gap-2 md:gap-3 bg-gray-800/40 px-2.5 py-1 rounded-full">
-                            <button onClick={() => switchBranch(msg.siblingIds[msg.branchIndex - 2])} disabled={msg.branchIndex <= 1} className="hover:text-white disabled:opacity-30 transition-colors">◀</button>
-                            <span className="tracking-widest">{msg.branchIndex} / {msg.branchCount}</span>
-                            <button onClick={() => switchBranch(msg.siblingIds[msg.branchIndex])} disabled={msg.branchIndex >= msg.branchCount} className="hover:text-white disabled:opacity-30 transition-colors">▶</button>
-                          </div>
-                        )}
-                        
-                        <button 
-                          onClick={() => copyFullMessage(msg.id, msg.content)} 
-                          className="hover:text-white flex items-center gap-1.5 transition-colors"
-                        >
-                          {copiedMessageId === msg.id ? '✓ Copied' : '⧉ Copy'}
-                        </button>
+              messages.map((msg) => {
+                const parsedContent = msg.role === 'assistant'
+                  ? parseMessageContent(msg.content)
+                  : { thought: null, main: msg.content, isThoughtComplete: true };
 
-                        {msg.role === 'assistant' && !isGenerating && (
-                          <button onClick={() => regenerateMessage(msg.id)} className="hover:text-white flex items-center gap-1.5 transition-colors">↻ Regenerate</button>
-                        )}
-                        {msg.role === 'user' && !isGenerating && (
-                          <button onClick={() => { setEditingMessageId(msg.id); setEditingMessageContent(msg.content); }} className="hover:text-white flex items-center gap-1.5 transition-colors">✎ Edit</button>
-                        )}
-                      </div>
-                    )}
+                return (
+                  <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`flex flex-col gap-2 w-full ${msg.role === 'user' ? 'max-w-[85%] md:max-w-[70%] items-end' : 'max-w-full md:max-w-[90%] items-start'}`}>
+
+                      {/* Message Content */}
+                      {editingMessageId === msg.id ? (
+                        <div className="w-full flex flex-col gap-3 bg-[#1e1e1e] p-3 md:p-4 rounded-2xl border border-gray-700 shadow-sm">
+                          <textarea
+                            className="w-full rounded-xl bg-[#111111] border border-gray-700 p-3 text-white focus:outline-none focus:border-blue-500 resize-none text-sm md:text-base"
+                            value={editingMessageContent}
+                            onChange={(e) => setEditingMessageContent(e.target.value)}
+                            rows={4}
+                          />
+                          <div className="flex justify-end gap-2">
+                            <button onClick={() => setEditingMessageId(null)} className="px-3 py-1.5 md:px-4 md:py-2 text-xs md:text-sm bg-gray-800 hover:bg-gray-700 rounded-lg text-white font-medium transition-colors">Cancel</button>
+                            <button
+                              onClick={() => {
+                                if (editingMessageContent.trim()) {
+                                  submitEdit(msg.id, editingMessageContent);
+                                  setEditingMessageId(null);
+                                }
+                              }}
+                              disabled={!editingMessageContent.trim()}
+                              className="px-3 py-1.5 md:px-4 md:py-2 text-xs md:text-sm bg-white text-black hover:bg-gray-200 rounded-lg font-semibold transition-colors disabled:opacity-50"
+                            >
+                              Save & Send
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          className={`px-4 py-3 md:px-5 md:py-4 shadow-sm text-sm md:text-base leading-relaxed ${msg.role === 'user'
+                              ? 'bg-blue-600 text-white rounded-3xl rounded-br-sm whitespace-pre-wrap'
+                              : 'text-gray-100 w-full'
+                            }`}
+                        >
+                          {msg.role === 'assistant' ? (
+                            <div className="max-w-none text-gray-100 marker:text-gray-100 text-sm md:text-base w-full">
+                              <ThoughtBlock thought={parsedContent.thought} isComplete={parsedContent.isThoughtComplete} />
+                              <div className="prose prose-invert prose-p:leading-relaxed prose-pre:bg-transparent prose-pre:p-0 prose-pre:border-0 w-full max-w-full">
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  components={{ code: CodeBlock }}
+                                >
+                                  {parsedContent.main}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                          ) : (
+                            msg.content
+                          )}
+                        </div>
+                      )}
+
+                      {/* Branch Controls & Global Copy */}
+                      {editingMessageId !== msg.id && (
+                        <div className={`flex flex-wrap items-center gap-3 md:gap-4 text-xs font-semibold px-2 mt-1 ${msg.role === 'user' ? 'justify-end text-blue-300' : 'justify-start text-gray-500'}`}>
+                          {msg.branchCount > 1 && (
+                            <div className="flex items-center gap-2 md:gap-3 bg-gray-800/40 px-2.5 py-1 rounded-full">
+                              <button onClick={() => switchBranch(msg.siblingIds[msg.branchIndex - 2])} disabled={msg.branchIndex <= 1} className="hover:text-white disabled:opacity-30 transition-colors">◀</button>
+                              <span className="tracking-widest">{msg.branchIndex} / {msg.branchCount}</span>
+                              <button onClick={() => switchBranch(msg.siblingIds[msg.branchIndex])} disabled={msg.branchIndex >= msg.branchCount} className="hover:text-white disabled:opacity-30 transition-colors">▶</button>
+                            </div>
+                          )}
+
+                          <button
+                            onClick={() => copyFullMessage(msg.id, msg.content)}
+                            className="hover:text-white flex items-center gap-1.5 transition-colors"
+                          >
+                            {copiedMessageId === msg.id ? '✓ Copied' : '⧉ Copy'}
+                          </button>
+
+                          {msg.role === 'assistant' && !isGenerating && (
+                            <button onClick={() => regenerateMessage(msg.id)} className="hover:text-white flex items-center gap-1.5 transition-colors">↻ Regenerate</button>
+                          )}
+                          {msg.role === 'user' && !isGenerating && (
+                            <button onClick={() => { setEditingMessageId(msg.id); setEditingMessageContent(msg.content); }} className="hover:text-white flex items-center gap-1.5 transition-colors">✎ Edit</button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
             {isGenerating && (
               <div className="flex justify-start">
@@ -339,6 +432,19 @@ function App() {
             <div ref={messagesEndRef} />
           </div>
         </main>
+
+        {/* Floating Scroll to Bottom Button */}
+        {isScrolledUp && (
+          <button
+            onClick={scrollToBottom}
+            className="absolute z-30 right-4 md:right-8 bottom-36 md:bottom-44 p-2.5 bg-[#2d2d2d] text-gray-300 rounded-full shadow-xl border border-gray-700 hover:text-white hover:bg-[#3d3d3d] transition-all focus:outline-none"
+            title="Scroll to bottom"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+            </svg>
+          </button>
+        )}
 
         {/* Floating Input Area */}
         <div className="absolute bottom-0 left-0 w-full bg-gradient-to-t from-[#111111] via-[#111111]/95 to-transparent pt-12 pb-4 md:pb-6 px-3 md:px-4 z-20 pb-safe pointer-events-none">
